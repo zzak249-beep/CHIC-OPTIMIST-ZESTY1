@@ -123,4 +123,5 @@ nuevas; las abiertas siguen gestionadas) · **`/reanudar`** · **`/cerrartodo`**
 | "no pude fijar el apalancamiento" | Configúralo a mano en BingX para ese par, o revisa el máximo del contrato |
 | El autotest da ✗ en SL/TP | Copia el mensaje exacto: indica qué parámetro rechaza BingX |
 | Tras un redeploy no veo mis operaciones | Falta el Volume en `/data` o `STATE_FILE` no apunta a él |
+| `'>=' not supported between instances of 'dict' and 'float'` o "no tiene el formato de este bot" | `STATE_FILE`/`TRADES_FILE` apuntan a un fichero que usa **otro bot** en el mismo Volume (p. ej. `/data/state.json` del Wyckoff). Usa nombres propios: `/data/granville_state.json`, `/data/granville_trades.json`, `/data/granville_live_trades.json`. El bot ya se niega a tocar ficheros ajenos |
 | `/real` dice que no está activa | `LIVE_TRADING=0`, faltan claves o falló el arranque (mira el aviso en Telegram) |

@@ -363,10 +363,70 @@ def t_wiring():
     check("mensajes de stats/abiertas se generan", "Abiertas ahora" in lt.stats_message() and "abiertas" in lt.open_message().lower())
 
 
+def t_foreign_files():
+    print("\n[12] ficheros de otro bot en el mismo Volume (el fallo de Railway)")
+    import json
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, "state.json")
+    foreign = {"BTC-USDT|1h": {"phase": "C", "ts": 1.0}}
+    open(p, "w").write(json.dumps(foreign))
+    try:
+        bot.State(p); ok = False
+    except bot.ForeignFileError as e:
+        ok = "STATE_FILE" in str(e)
+    check("State rechaza un state.json con otro formato", ok)
+    check("y no lo modifica", json.loads(open(p).read()) == foreign)
+    p2 = os.path.join(d, "trades.json")
+    open(p2, "w").write(json.dumps({"open": [{"foo": 1}], "closed": []}))
+    try:
+        bot.Tracker(p2, bot.make_cfg()); ok = False
+    except bot.ForeignFileError as e:
+        ok = "TRADES_FILE" in str(e)
+    check("Tracker rechaza un trades.json ajeno", ok)
+    open(p2, "w").write(json.dumps([1, 2, 3]))
+    try:
+        bot.Tracker(p2, bot.make_cfg()); ok = False
+    except bot.ForeignFileError:
+        ok = True
+    check("Tracker rechaza un JSON que no es un objeto", ok)
+    p3 = os.path.join(d, "live.json")
+    open(p3, "w").write(json.dumps({"open": [{"x": 1}], "closed": []}))
+    lt, n, cfg = mk()
+    lt.path = ex.Path(p3)
+    try:
+        lt._load(); ok = False
+    except RuntimeError as e:
+        ok = "LIVE_TRADES_FILE" in str(e)
+    check("LiveTrader rechaza un registro ajeno", ok)
+    # los ficheros propios siguen cargando, y uno corrupto de State empieza vacío
+    p4 = os.path.join(d, "ok_state.json")
+    open(p4, "w").write(json.dumps({"AAA|15m|1|LONG": 1.7e9}))
+    check("State propio carga", len(bot.State(p4).data) == 1)
+    p5 = os.path.join(d, "corrupt.json")
+    open(p5, "w").write("{no es json")
+    check("State corrupto empieza vacío (como antes)", bot.State(p5).data == {})
+    p6 = os.path.join(d, "ok_tr.json")
+    t = bot.Tracker(p6, cfg); t.add(sig_bot()); t.save()
+    check("Tracker propio se guarda y se vuelve a cargar", bot.Tracker(p6, cfg).open_count() == 1)
+    lt.path = ex.Path(d) / "ok_live.json"
+    lt.try_open(sig())
+    lt.save()
+    lt3, _, _ = mk(); lt3.path = lt.path
+    lt3._load()
+    check("registro real propio se vuelve a cargar", len(lt3.open) == 1)
+    check("nombres por defecto propios", ex.make_live(cfg, n).path.name == "granville_live_trades.json")
+
+
+def sig_bot():
+    return bot.Signal(symbol="AAA-USDT", tf="15m", side="LONG", kinds=["G1"], candle_open_ms=T0, price=100.0, atr=1.3333,
+                      sl=98.0, tp1=102.0, tp2=106.0, stop_dist=2.0, prec=2,
+                      stats={"er": 0.5, "adx": 25.0, "rvol": 1.3, "body": 0.7}, notes=[])
+
+
 if __name__ == "__main__":
     for h in (True, False):
         t_entry_and_sizing(h)
         t_full_winner(h)
-    t_stop_loss(); t_short(); t_emergency(); t_selfheal_and_external(); t_time_and_opposite(); t_limits(); t_persistence(); t_signature(); t_wiring()
+    t_stop_loss(); t_short(); t_emergency(); t_selfheal_and_external(); t_time_and_opposite(); t_limits(); t_persistence(); t_signature(); t_wiring(); t_foreign_files()
     print("\n" + ("TODO CORRECTO ✅" if check.fail == 0 else f"{check.fail} COMPROBACIONES FALLARON ❌"))
     sys.exit(1 if check.fail else 0)

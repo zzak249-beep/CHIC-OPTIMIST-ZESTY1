@@ -144,7 +144,7 @@ def make_cfg() -> SimpleNamespace:
         # ejecución
         rps=f("RATE_LIMIT_RPS", 8), workers=i("WORKERS", 8),
         delay=f("SCAN_DELAY_SEC", 6), max_age_factor=f("MAX_SIGNAL_AGE_FACTOR", 1.5),
-        max_per_scan=i("MAX_SIGNALS_PER_SCAN", 8), state_file=s("STATE_FILE", "state.json"),
+        max_per_scan=i("MAX_SIGNALS_PER_SCAN", 8), state_file=s("STATE_FILE", "granville_state.json"),
     )
 
 
@@ -541,9 +541,15 @@ class Tracker:
         if self.path.exists():
             try:
                 d = json.loads(self.path.read_text(encoding="utf-8"))
-                self.open, self.closed = d.get("open", []), d.get("closed", [])
-            except Exception as ex:  # noqa: BLE001
+            except Exception as ex:  # noqa: BLE001  (fichero corrupto: se empieza vacío)
                 log.warning("No se pudo leer %s (%s): empiezo vacío", self.path, ex)
+                d = {}
+            need = {"id", "symbol", "tf", "side", "kinds", "realized"}
+            rows = (d.get("open", []) + d.get("closed", [])) if isinstance(d, dict) and \
+                isinstance(d.get("open", []), list) and isinstance(d.get("closed", []), list) else None
+            if rows is None or not all(isinstance(t, dict) and need <= t.keys() for t in rows):
+                raise ForeignFileError(_foreign_msg(self.path, "TRADES_FILE"))
+            self.open, self.closed = d.get("open", []), d.get("closed", [])
 
     def save(self) -> None:
         with self.lock:
@@ -857,6 +863,15 @@ class Notifier:
         return False
 
 
+class ForeignFileError(RuntimeError):
+    """El fichero de estado existe pero NO es de este programa (p. ej. lo usa otro bot en el mismo Volume)."""
+
+
+def _foreign_msg(path: Path, var: str) -> str:
+    return (f"{path} existe pero no tiene el formato de este bot (¿lo usa otro programa en el mismo Volume?). "
+            f"No lo toco. Cambia la variable {var} a un nombre propio, p. ej. /data/granville_{path.name}")
+
+
 class State:
     """Señales ya enviadas (evita duplicados tras reinicios si el fichero persiste)."""
 
@@ -865,9 +880,12 @@ class State:
         self.data: dict[str, float] = {}
         if self.path.exists():
             try:
-                self.data = json.loads(self.path.read_text(encoding="utf-8"))
-            except Exception:  # noqa: BLE001
-                self.data = {}
+                d = json.loads(self.path.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001  (fichero corrupto: se empieza vacío)
+                d = {}
+            if not (isinstance(d, dict) and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in d.values())):
+                raise ForeignFileError(_foreign_msg(self.path, "STATE_FILE"))
+            self.data = d
 
     def seen(self, key: str) -> bool:
         return key in self.data
@@ -1384,9 +1402,14 @@ def main() -> None:
     if a.history:
         return cmd_history(api, cfg, a.history, cfg.timeframes[0], a.bars)
 
-    state = State(cfg.state_file)
-    trades_path = cfg.trades_file or str(Path(cfg.state_file).with_name("trades.json"))
-    tracker = Tracker(trades_path, cfg) if cfg.track else None
+    trades_path = cfg.trades_file or str(Path(cfg.state_file).with_name("granville_trades.json"))
+    try:
+        state = State(cfg.state_file)
+        tracker = Tracker(trades_path, cfg) if cfg.track else None
+    except ForeignFileError as ex:
+        log.error("%s", ex)
+        notifier.send(f"⛔ {html.escape(str(ex))}")
+        sys.exit(str(ex))
     signal.signal(signal.SIGTERM, _sigterm)
     if a.once:
         if os.getenv("LIVE_TRADING", "0").strip().lower() in ("1", "true", "yes", "si", "sí", "on"):
@@ -1397,7 +1420,12 @@ def main() -> None:
         return
     live = None
     if live_exec is not None and not a.dry_run:
-        live = live_exec.make_live(cfg, notifier)
+        try:
+            live = live_exec.make_live(cfg, notifier)
+        except RuntimeError as ex:
+            log.error("%s", ex)
+            notifier.send(f"⛔ Ejecución real NO iniciada: {html.escape(str(ex))}\nSigo SOLO con señales.")
+            live = None
     run_loop(api, cfg, notifier, state, tracker, live)
 
 

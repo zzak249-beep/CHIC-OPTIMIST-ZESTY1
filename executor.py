@@ -263,11 +263,18 @@ class LiveTrader:
             return
         try:
             d = json.loads(self.path.read_text(encoding="utf-8"))
-            self.open, self.closed = d.get("open", []), d.get("closed", [])
-            self.paused = bool(d.get("paused", False))
-            self._sync()
         except Exception as ex:  # noqa: BLE001
-            log.error("No se pudo leer %s (%s). REVISA tus posiciones en BingX a mano.", self.path, ex)
+            raise RuntimeError(f"No se pudo leer {self.path} ({ex}). Puede haber posiciones abiertas que el bot ya no recuerda: "
+                               "revisa BingX a mano y borra o arregla ese fichero.")
+        need = {"id", "symbol", "tf", "side", "orders", "qty", "legs"}
+        rows = (d.get("open", []) + d.get("closed", [])) if isinstance(d, dict) and \
+            isinstance(d.get("open", []), list) and isinstance(d.get("closed", []), list) else None
+        if rows is None or not all(isinstance(t, dict) and need <= t.keys() for t in rows):
+            raise RuntimeError(f"{self.path} existe pero no es un registro de operaciones de este bot (¿lo usa otro programa?). "
+                               "No lo toco. Cambia LIVE_TRADES_FILE a un nombre propio, p. ej. /data/granville_live_trades.json")
+        self.open, self.closed = d.get("open", []), d.get("closed", [])
+        self.paused = bool(d.get("paused", False))
+        self._sync()
 
     def _save(self) -> None:
         self.closed = self.closed[-2000:]
@@ -468,7 +475,7 @@ class LiveTrader:
             warn = ""
             if os.getenv("RAILWAY_ENVIRONMENT") and not str(self.path).startswith("/data"):
                 warn = ("\n⚠️ Sin Volume en /data: si Railway reinicia, el bot pierde la memoria de sus operaciones "
-                        "(los SL/TP seguirían en BingX pero sin trailing). Añade un Volume y define STATE_FILE=/data/state.json.")
+                        "(los SL/TP seguirían en BingX pero sin trailing). Añade un Volume y define STATE_FILE=/data/granville_state.json.")
             return (f"{self.tag} ejecución ACTIVA · saldo {eq:.2f} · modo {'hedge' if self.hedge else 'one-way'} · "
                     f"riesgo {self.cfg.risk_pct:g}%/op · máx. {self.L.max_live} abiertas · "
                     f"límite diario {self.L.daily_loss_r:g}R · {len(self.open)} operaciones reales abiertas"
@@ -1134,7 +1141,7 @@ def make_live(cfg, notifier, force: bool = False) -> Optional[LiveTrader]:
     pm = s("POSITION_MODE", "auto").lower()
     if pm not in ("auto", "hedge", "oneway"):
         raise SystemExit("POSITION_MODE debe ser auto, hedge u oneway")
-    default_file = str(Path(cfg.state_file).with_name("live_trades.json"))
+    default_file = str(Path(cfg.state_file).with_name("granville_live_trades.json"))
     L = SimpleNamespace(
         env=env, api_key=key, api_secret=secret, position_mode=pm,
         leverage=int(f("LIVE_LEVERAGE", 3)), max_live=int(f("MAX_LIVE_TRADES", 3)),
